@@ -36,7 +36,8 @@ def extract_features(backbone: str, images, batch_size=64, size=224, device="cpu
     import numpy as np
     import torch.nn.functional as F
 
-    m = timm.create_model(backbone, pretrained=True, num_classes=0).to(device).eval()
+    kwargs = {"img_size": size} if "vit" in backbone else {}
+    m = timm.create_model(backbone, pretrained=True, num_classes=0, **kwargs).to(device).eval()
     cfg = m.pretrained_cfg
     mean = torch.tensor(cfg.get("mean", MEAN), device=device).view(1, 3, 1, 1)
     std = torch.tensor(cfg.get("std", STD), device=device).view(1, 3, 1, 1)
