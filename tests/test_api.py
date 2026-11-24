@@ -35,3 +35,8 @@ def test_not_an_image(client):
 def test_bad_site(client):
     r = client.post("/predict", files={"image": ("x.jpg", _jpeg(), "image/jpeg")}, data={"site": "moon"})
     assert r.status_code == 422
+
+
+def test_age_out_of_range(client):
+    r = client.post("/predict", files={"image": ("x.jpg", _jpeg(), "image/jpeg")}, data={"age": "300"})
+    assert r.status_code == 422
