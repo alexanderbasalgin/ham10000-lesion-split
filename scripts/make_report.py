@@ -30,7 +30,29 @@ plt.rcParams.update({"font.size": 10, "axes.edgecolor": GRID, "axes.labelcolor":
                      "figure.facecolor": "#fcfcfb", "axes.facecolor": "#fcfcfb"})
 
 
-def results_figure(m, path):
+def seed_values(m, rep, model, split):
+    vals = [m[f"{model}/{split}"]["balanced_accuracy"]]
+    vals += [v["balanced_accuracy"] for k, v in rep.items() if k.startswith(f"{model}/{split}/s")]
+    return vals
+
+
+def seed_table(m, rep):
+    rows = []
+    for model in ("probe", "probe_meta", "finetune", "finetune_meta"):
+        for split in ("lesion", "image"):
+            if f"{model}/{split}" not in m:
+                continue
+            keys = [f"{model}/{split}"] + [k for k in rep if k.startswith(f"{model}/{split}/s")]
+            runs = [m.get(k) or rep[k] for k in keys]
+            cell = {"model": NAMES[model], "split": split, "seeds": len(runs)}
+            for metric in ("balanced_accuracy", "macro_f1", "accuracy", "mel_sens_at_90spec", "malignant_auc"):
+                v = [r[metric] for r in runs]
+                cell[metric] = f"{np.mean(v):.3f} ± {np.std(v):.3f}"
+            rows.append(cell)
+    return pd.DataFrame(rows)
+
+
+def results_figure(m, rep, path):
     keys = [k for k in NAMES if f"{k}/lesion" in m]
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 3.8), gridspec_kw={"width_ratios": [1.35, 1]})
     vals = [m[f"{k}/lesion"]["balanced_accuracy"] for k in keys]
@@ -43,24 +65,25 @@ def results_figure(m, path):
     a1.set_yticks(ypos, [NAMES[k] for k in keys])
     a1.invert_yaxis()
     a1.set_xlim(0, 1)
-    a1.set_xlabel("balanced accuracy, lesion-level test set (95% CI)")
+    a1.set_xlabel("balanced accuracy, lesion-split test, seed 0 (95% CI)")
     a1.grid(axis="x", color=GRID, lw=0.8)
     a1.set_axisbelow(True)
     a1.set_title("Test balanced accuracy over 7 classes", loc="left", color=INK)
 
-    pairs = [k for k in ("color_lr", "probe", "finetune") if f"{k}/image" in m]
+    pairs = ["probe", "finetune"]
     x = np.arange(len(pairs))
     w = 0.36
-    les = [m[f"{k}/lesion"]["balanced_accuracy"] for k in pairs]
-    img = [m[f"{k}/image"]["balanced_accuracy"] for k in pairs]
-    a2.bar(x - w / 2 - 0.01, les, w, color=BLUE, label="split by lesion")
-    a2.bar(x + w / 2 + 0.01, img, w, color=ORANGE, label="split by image (leaky)")
-    for xx, a, b in zip(x, les, img):
-        a2.text(xx - w / 2, a + 0.015, f"{a:.2f}", ha="center", fontsize=9, color=INK)
-        a2.text(xx + w / 2, b + 0.015, f"{b:.2f}", ha="center", fontsize=9, color=INK)
-    a2.set_xticks(x, [NAMES[k].replace(" + ", "\n+ ").replace(" fine-tuned", "\nfine-tuned") for k in pairs], fontsize=9)
+    for off, split, color, label in ((-w / 2 - 0.01, "lesion", BLUE, "split by lesion"),
+                                     (w / 2 + 0.01, "image", ORANGE, "split by image (leaky)")):
+        per_seed = [seed_values(m, rep, k, split) for k in pairs]
+        means = [np.mean(v) for v in per_seed]
+        a2.bar(x + off, means, w, color=color, label=label)
+        for xx, v, mu in zip(x, per_seed, means):
+            a2.scatter(np.full(len(v), xx + off), v, s=12, color=INK, zorder=3)
+            a2.text(xx + off, max(v) + 0.02, f"{mu:.3f}", ha="center", fontsize=9, color=INK)
+    a2.set_xticks(x, ["DINOv2-S frozen + LR", "ConvNeXt-T fine-tuned"], fontsize=9)
     a2.set_ylim(0, 1)
-    a2.set_ylabel("test balanced accuracy")
+    a2.set_ylabel("test balanced accuracy (mean, dots = seeds)")
     a2.grid(axis="y", color=GRID, lw=0.8)
     a2.set_axisbelow(True)
     a2.legend(frameon=False, loc="upper left", fontsize=9)
@@ -84,7 +107,7 @@ def confusion_figure(pred, col, path):
     ax.set_yticks(range(len(CLASSES)), [f"{c} ({n})" for c, n in zip(CLASSES, cm.sum(1))])
     ax.set_xlabel("predicted")
     ax.set_ylabel("true (test images)")
-    ax.set_title("Row-normalised confusion, best model", loc="left", color=INK, fontsize=10)
+    ax.set_title("ConvNeXt-T, lesion-split test, row-normalised", loc="left", color=INK, fontsize=10)
     for s in ax.spines.values():
         s.set_visible(False)
     fig.tight_layout()
@@ -126,21 +149,28 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
     ap.add_argument("--out", default="reports")
+    ap.add_argument("--repeats", help="metrics_repeats.json from the second round")
     args = ap.parse_args()
     run, out = Path(args.run_dir), Path(args.out)
     (out / "figures").mkdir(parents=True, exist_ok=True)
     m = json.load(open(run / "metrics.json"))
     pred = pd.read_csv(run / "test_predictions_lesion.csv")
-    best = "finetune_meta_pred"
-    results_figure(m, out / "figures" / "results.png")
+    best = "finetune_pred"
+    rep = json.load(open(args.repeats)) if args.repeats else {}
+    results_figure(m, rep, out / "figures" / "results.png")
     confusion_figure(pred, best, out / "figures" / "confusion.png")
     wrong = error_gallery(pred, best, run / "thumbs", out / "figures" / "errors.png")
     t = table(m)
     md = ["| " + " | ".join(t.columns) + " |", "|" + "---|" * len(t.columns)]
     md += ["| " + " | ".join(map(str, r)) + " |" for r in t.itertuples(index=False)]
+    if rep:
+        st = seed_table(m, rep)
+        md += ["", "Mean ± std over split seeds:", "", "| " + " | ".join(st.columns) + " |", "|" + "---|" * len(st.columns)]
+        md += ["| " + " | ".join(map(str, r)) + " |" for r in st.itertuples(index=False)]
+        print(st.to_string(index=False))
     (out / "results.md").write_text("\n".join(md) + "\n")
     print(t.to_string(index=False))
-    print(wrong[["image_id", "dx", "age", "sex", "localization", best, "finetune_meta_conf"]].to_string(index=False))
+    print(wrong[["image_id", "dx", "age", "sex", "localization", best, "finetune_conf"]].to_string(index=False))
     # how the ground truth was established matters a lot: follow-up nevi are a very easy subgroup
     pred = pred.merge(pd.read_csv(run / "splits.csv")[["image_id", "dx_type"]], on="image_id")
     pred["error"] = pred[best] != pred["dx"]

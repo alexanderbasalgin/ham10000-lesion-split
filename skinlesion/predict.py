@@ -16,7 +16,7 @@ from .data import CLASS_NAMES, CLASSES, MALIGNANT, META_DIM, encode_meta, load_i
 from .model import SkinNet
 from .train import predict_proba
 
-DEFAULT_CKPT = "artifacts/finetune_meta.pt"
+DEFAULT_CKPT = "artifacts/finetune.pt"
 
 
 @lru_cache(maxsize=2)
