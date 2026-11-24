@@ -15,7 +15,7 @@ if __name__ == "__main__":
     quick = os.environ.get("QUICK") == "1"
     log = lambda s: print(s, flush=True)  # noqa: E731
     # STAGE=main: all models on split seed 0; STAGE=repeats: two more split seeds + 320px run
-    if os.environ.get("STAGE", "repeats") == "main":
+    if os.environ.get("STAGE", "main") == "main":
         run(data_root, out_dir, quick=quick, log=log)
     else:
         run_repeats(data_root, out_dir, quick=quick, log=log)

@@ -86,8 +86,11 @@ Images are center-cropped from 600x450 to a square and cached at 256 px.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # CPU torch
-make test                                # fast tests on synthetic images, no downloads
-make quick                               # fetch ~300 images and run the whole pipeline with tiny models on CPU
+python -m pytest -q                      # fast tests on synthetic images, no downloads
+
+# fetch ~300 images and run the whole pipeline with tiny models on CPU (~2 min)
+python scripts/fetch_sample.py --out data/sample --n 300
+DATA_ROOT=data/sample OUTPUT_DIR=artifacts/quick QUICK=1 python kaggle/train.py
 ```
 
 Full training (any machine with a GPU, ~45 min on a T4 for the first round, ~85 min for the repeats):
@@ -100,7 +103,7 @@ python scripts/make_report.py artifacts/run --repeats artifacts/repeats/metrics_
 cp artifacts/run/finetune.pt artifacts/
 ```
 
-On Kaggle the same `kaggle/train.py` is the notebook entry point with the dataset attached; it finds the data under `/kaggle/input` by itself.
+The same commands are wrapped in the `Makefile` (`make test`, `make quick`, `make train`). On Kaggle the same `kaggle/train.py` is the notebook entry point with the dataset attached; it finds the data under `/kaggle/input` by itself.
 
 ### Predict one image
 
