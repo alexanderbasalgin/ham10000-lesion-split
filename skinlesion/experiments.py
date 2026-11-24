@@ -142,3 +142,89 @@ def run(data_root, out_dir, quick=False, log=print):
     json.dump(results, open(out / "metrics.json", "w"), indent=2)
     log(f"done in {results['_total_minutes']} min")
     return results
+
+
+def _leak_stats(y_te, pred_te, seen):
+    """Accuracy and class-balanced recall on test images whose lesion is / is not in train."""
+    out = {"test_share_seen_lesion": float(seen.mean())}
+    for flag, mask in (("seen", seen), ("unseen", ~seen)):
+        recalls = [float((pred_te[mask & (y_te == c)] == c).mean()) for c in range(len(CLASSES))
+                   if (mask & (y_te == c)).sum() >= 5]
+        out[f"accuracy_{flag}_lesion"] = float((pred_te[mask] == y_te[mask]).mean())
+        out[f"bal_acc_{flag}_lesion"] = float(np.mean(recalls))
+    return out
+
+
+def run_repeats(data_root, out_dir, seeds=(1, 2), quick=False, log=print):
+    """Second round: the main comparisons on fresh split seeds, plus a 320px fine-tune."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    t_start = time.time()
+    df = load_metadata(data_root)
+    y, groups, meta = df["label"].to_numpy(), df["lesion_id"].to_numpy(), encode_meta(df)
+    base = FinetuneConfig(epochs=1, batch_size=16, img_size=64, workers=0,
+                          backbone="resnet18.a1_in1k") if quick else FinetuneConfig()
+    probe_backbone = "resnet18.a1_in1k" if quick else "vit_small_patch14_dinov2.lvd142m"
+    results, preds = {}, []
+
+    def evaluate(key, split, proba, extra=None):
+        te = np.flatnonzero(split == "test")
+        m = summarize(y[te], proba)
+        m["bal_acc_ci"] = bootstrap_ci(y[te], proba, groups=groups[te], n=200 if quick else 1000)
+        seen = np.isin(groups[te], groups[split == "train"])
+        if seen.any():
+            m.update(_leak_stats(y[te], proba.argmax(1), seen))
+        m.update(extra or {})
+        results[key] = m
+        preds.append(pd.DataFrame({"run": key, "image_id": df["image_id"].iloc[te].values, "dx": df["dx"].iloc[te].values,
+                                   "pred": [CLASSES[i] for i in proba.argmax(1)], "conf": proba.max(1).round(4),
+                                   "seen_lesion": seen}))
+        log(f"[{key}] bal_acc {m['balanced_accuracy']:.3f} acc {m['accuracy']:.3f} "
+            f"mel_sens@90spec {m.get('mel_sens_at_90spec', float('nan')):.3f}")
+        json.dump(results, open(out / "metrics_repeats.json", "w"), indent=2)
+
+    def probe(feats, split):
+        tr, va, te = (np.flatnonzero(split == k) for k in ("train", "val", "test"))
+        best = max(((summarize(y[va], baselines.linear_head(C).fit(feats[tr], y[tr]).predict_proba(feats[va]))
+                     ["balanced_accuracy"], C) for C in (0.01, 0.03, 0.1, 0.3, 1.0)))
+        trva = np.concatenate([tr, va])
+        return baselines.linear_head(best[1]).fit(feats[trva], y[trva]).predict_proba(feats[te])
+
+    images = load_images(df["path"].tolist(), size=96 if quick else 256)
+    deep = extract_features(probe_backbone, images, size=64 if quick else 224, device=str(device))
+    for seed in seeds:
+        splits = {"lesion": lesion_split(df, seed=seed), "image": random_split(df, seed=seed)}
+        for name, split in splits.items():
+            evaluate(f"probe/{name}/s{seed}", split, probe(deep, split))
+        evaluate(f"probe_meta/lesion/s{seed}", splits["lesion"],
+                 probe(np.concatenate([deep, meta * 3], 1), splits["lesion"]))
+        for key, name, over in (("finetune", "lesion", {}), ("finetune_meta", "lesion", {"use_meta": True}),
+                                ("finetune", "image", {})):
+            split = splits[name]
+            tr, va, te = (np.flatnonzero(split == k) for k in ("train", "val", "test"))
+            cfg = FinetuneConfig(**{**base.__dict__, **over, "seed": seed})
+            t0 = time.time()
+            model, _ = finetune(cfg, images, y, meta, tr, va, device, log=lambda s: None)
+            evaluate(f"{key}/{name}/s{seed}", split, predict_proba(model, images[te], meta[te], device, cfg.img_size),
+                     {"train_minutes": round((time.time() - t0) / 60, 1)})
+            del model
+            torch.cuda.empty_cache()
+        pd.concat(preds).to_csv(out / "test_predictions_repeats.csv", index=False)
+
+    # does a higher input resolution help? same split as the first round (seed 0)
+    del images
+    hi_size = 128 if quick else 352
+    images = load_images(df["path"].tolist(), size=hi_size)
+    split = lesion_split(df, seed=0)
+    tr, va, te = (np.flatnonzero(split == k) for k in ("train", "val", "test"))
+    cfg = FinetuneConfig(**{**base.__dict__, "img_size": 96 if quick else 320,
+                            "batch_size": base.batch_size if quick else 32})
+    t0 = time.time()
+    model, hist = finetune(cfg, images, y, meta, tr, va, device, log=log)
+    evaluate("finetune320/lesion/s0", split, predict_proba(model, images[te], meta[te], device, cfg.img_size),
+             {"train_minutes": round((time.time() - t0) / 60, 1)})
+    pd.concat(preds).to_csv(out / "test_predictions_repeats.csv", index=False)
+    results["_total_minutes"] = round((time.time() - t_start) / 60, 1)
+    json.dump(results, open(out / "metrics_repeats.json", "w"), indent=2)
+    log(f"done in {results['_total_minutes']} min")
