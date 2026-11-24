@@ -101,7 +101,7 @@ def random_split(df: pd.DataFrame, seed: int = 0, n_folds: int = 7) -> pd.Series
 
 def load_image(path, size: int) -> np.ndarray:
     # HAM10000 images are 600x450; center-crop to square then resize
-    img = Image.open(path).convert("RGB")
+    img = (path if isinstance(path, Image.Image) else Image.open(path)).convert("RGB")
     w, h = img.size
     s = min(w, h)
     img = img.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
