@@ -94,7 +94,8 @@ def confusion_figure(pred, col, path):
 
 def error_gallery(pred, col, thumbs, path, n=6):
     wrong = pred[pred[col] != pred["dx"]].sort_values(f"{col.removesuffix('_pred')}_conf", ascending=False)
-    wrong = wrong[[Path(thumbs, f"{i}.jpg").exists() for i in wrong["image_id"]]].head(n)
+    wrong = wrong[[Path(thumbs, f"{i}.jpg").exists() for i in wrong["image_id"]]]
+    wrong = wrong.drop_duplicates("lesion_id").head(n)
     fig, axes = plt.subplots(1, len(wrong), figsize=(2.1 * len(wrong), 2.6))
     for ax, (_, r) in zip(np.atleast_1d(axes), wrong.iterrows()):
         ax.imshow(Image.open(Path(thumbs, f"{r['image_id']}.jpg")))
@@ -140,6 +141,13 @@ def main():
     (out / "results.md").write_text("\n".join(md) + "\n")
     print(t.to_string(index=False))
     print(wrong[["image_id", "dx", "age", "sex", "localization", best, "finetune_meta_conf"]].to_string(index=False))
+    # how the ground truth was established matters a lot: follow-up nevi are a very easy subgroup
+    pred = pred.merge(pd.read_csv(run / "splits.csv")[["image_id", "dx_type"]], on="image_id")
+    pred["error"] = pred[best] != pred["dx"]
+    print(pred.groupby("dx_type")["error"].agg(["mean", "size"]).round(3).to_string())
+    histo = pred[pred["dx_type"] == "histo"]
+    print("balanced accuracy on histology-confirmed only:",
+          round(float(np.mean([(histo.loc[histo.dx == c, best] == c).mean() for c in CLASSES if (histo.dx == c).sum()])), 3))
     for k in ("color_lr/image", "probe/image", "finetune/image"):
         if k in m:
             r = m[k]

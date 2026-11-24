@@ -105,7 +105,7 @@ def load_image(path, size: int) -> np.ndarray:
     w, h = img.size
     s = min(w, h)
     img = img.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
-    return np.asarray(img.resize((size, size), Image.BICUBIC), dtype=np.uint8)
+    return np.array(img.resize((size, size), Image.BICUBIC), dtype=np.uint8)
 
 
 def load_images(paths, size: int = 256, workers: int = 8) -> np.ndarray:
